@@ -1,0 +1,85 @@
+name: Build Flixora APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CORE_REPO: devfahim00/SparkBoxCore
+  CORE_REF: main
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Arrange files
+        run: |
+          for f in *__*; do
+            d="${f//__//}"
+            mkdir -p "$(dirname "$d")"
+            mv "$f" "$d"
+          done
+          find . -path ./.git -prune -o -type f -print | sort
+
+      - name: Checkout Rust core
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CORE_REPO }}
+          ref: ${{ env.CORE_REF }}
+          path: core
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Generate Android platform folder
+        run: |
+          cp -r lib /tmp/lib_bak
+          cp pubspec.yaml /tmp/pubspec_bak.yaml
+          flutter create . --project-name flixora --org com.flixora --platforms android
+          rm -rf lib && cp -r /tmp/lib_bak lib
+          cp /tmp/pubspec_bak.yaml pubspec.yaml
+          rm -rf test
+          sed -i 's/android:label="[^"]*"/android:label="Flixora"/' android/app/src/main/AndroidManifest.xml
+
+      - name: Build Rust core for Android
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          cd core
+          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
+            -o ../android/app/src/main/jniLibs \
+            build --release -p sparkbox-ffi
+
+      - name: Flutter deps and icons
+        run: |
+          flutter pub get
+          dart run flutter_launcher_icons
+
+      - name: Build APK
+        run: flutter build apk --release --split-per-abi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flixora-apk
+          path: build/app/outputs/flutter-apk/*.apk
